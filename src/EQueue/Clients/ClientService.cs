@@ -70,7 +70,7 @@ namespace EQueue.Clients
             _jsonSerializer = ObjectContainer.Resolve<IJsonSerializer>();
             _scheduleService = ObjectContainer.Resolve<IScheduleService>();
             _logger = ObjectContainer.Resolve<ILoggerFactory>().Create(GetType().FullName);
-            _nameServerRemotingClientList = _setting.NameServerList.ToRemotingClientList(_setting.SocketSetting).ToList();
+            _nameServerRemotingClientList = _setting.NameServerList.ToRemotingClientList(_setting.ClientName, _setting.SocketSetting).ToList();
         }
 
         #region Public Methods
@@ -87,12 +87,13 @@ namespace EQueue.Clients
         public virtual ClientService Start()
         {
             StartAllNameServerClients();
-            RefreshClusterBrokers();
+            RefreshClusterBrokers().Wait();
+            RefreshTopicRouteInfo().Wait();
             _scheduleService.StartTask("SendHeartbeatToAllBrokers", SendHeartbeatToAllBrokers, 1000, _setting.SendHeartbeatInterval);
-            _scheduleService.StartTask("RefreshBrokerAndTopicRouteInfo", () =>
+            _scheduleService.StartTask("RefreshBrokerAndTopicRouteInfo", async () =>
             {
-                RefreshClusterBrokers();
-                RefreshTopicRouteInfo();
+                await RefreshClusterBrokers();
+                await RefreshTopicRouteInfo();
             }, 1000, _setting.RefreshBrokerAndTopicRouteInfoInterval);
             _logger.InfoFormat("{0} startted.", GetType().Name);
             return this;
@@ -127,6 +128,14 @@ namespace EQueue.Clients
                 throw new Exception("No available broker.");
             }
             return availableList.First();
+        }
+        public IList<MessageQueue> GetAvailableMessageQueues(string topic)
+        {
+            if (_topicMessageQueueDict.TryGetValue(topic, out IList<MessageQueue> messageQueueList))
+            {
+                return messageQueueList;
+            }
+            return null;
         }
         public async Task<IList<MessageQueue>> GetTopicMessageQueuesAsync(string topic)
         {
@@ -222,7 +231,7 @@ namespace EQueue.Clients
                 brokerService.Stop();
             }
         }
-        private async void RefreshClusterBrokers()
+        private async Task RefreshClusterBrokers()
         {
             using (await _asyncLock.LockAsync())
             {
@@ -256,7 +265,7 @@ namespace EQueue.Clients
                 }
             }
         }
-        private async void RefreshTopicRouteInfo()
+        private async Task RefreshTopicRouteInfo()
         {
             using (await _asyncLock.LockAsync())
             {
@@ -352,8 +361,8 @@ namespace EQueue.Clients
                 throw new Exception("ClientService must set producer or consumer.");
             }
             var brokerAdminEndpoint = brokerInfo.AdminAddress.ToEndPoint();
-            var remotingClient = new SocketRemotingClient(brokerEndpoint, _setting.SocketSetting);
-            var adminRemotingClient = new SocketRemotingClient(brokerAdminEndpoint, _setting.SocketSetting);
+            var remotingClient = new SocketRemotingClient(_setting.ClientName, brokerEndpoint, _setting.SocketSetting);
+            var adminRemotingClient = new SocketRemotingClient(_setting.ClientName, brokerAdminEndpoint, _setting.SocketSetting);
             var brokerConnection = new BrokerConnection(brokerInfo, remotingClient, adminRemotingClient);
 
             if (_producer != null && _producer.ResponseHandler != null)
